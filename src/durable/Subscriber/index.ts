@@ -38,6 +38,11 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 
 		const sessionId = ws.deserializeAttachment() as string;
 
+		// delete existing subscriptions for this session
+		const db = await this.getDb();
+		await db.delete(schema.tickerSubscriptions).where(eq(schema.tickerSubscriptions.sessionId, sessionId));
+		await this.cleanupSubscriptions(); // TODO: this might be wasteful if the user is resubscribing to the some of the same tickers. Might want to do surgical updates in the future.
+
 		await Promise.all(tickers.map((ticker) => this.subscribe(sessionId, ticker)));
 	}
 
@@ -63,7 +68,7 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 		}
 
 		const db = await this.getDb();
-		const publishers = await db.query.publishers.findMany({columns: { publisherId: true }});
+		const publishers = await db.query.publishers.findMany({ columns: { publisherId: true } });
 		if (!publishers.some((publisher) => publisher.publisherId === message.publisherId)) {
 			console.warn('received message from invalid publisher', message.publisherId);
 			await this.unsubscribe(message.publisherId);
@@ -126,14 +131,17 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 		const sessionId = webSocket.deserializeAttachment() as string;
 		await db.delete(schema.sessions).where(eq(schema.sessions.sessionId, sessionId));
 
+		await this.cleanupSubscriptions();
+	}
+
+	private async cleanupSubscriptions(): Promise<void> {
+		const db = await this.getDb();
+
 		// Unsubscribe publishers that have no active ticker subscriptions
 		const publishersWithoutSubscriptions = await db
 			.select({ publisherId: schema.publishers.publisherId })
 			.from(schema.publishers)
-			.leftJoin(
-				schema.tickerSubscriptions,
-				eq(schema.publishers.publisherId, schema.tickerSubscriptions.publisherId)
-			)
+			.leftJoin(schema.tickerSubscriptions, eq(schema.publishers.publisherId, schema.tickerSubscriptions.publisherId))
 			.groupBy(schema.publishers.publisherId)
 			.having(eq(count(schema.tickerSubscriptions.sessionId), 0));
 
@@ -167,9 +175,12 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 			console.log(`Subscribed to publisher: ${id.toString()}`);
 		}
 
-		await db.insert(schema.tickerSubscriptions).values({
-			sessionId,
-			publisherId: id.toString(),
-		}).onConflictDoNothing();
+		await db
+			.insert(schema.tickerSubscriptions)
+			.values({
+				sessionId,
+				publisherId: id.toString(),
+			})
+			.onConflictDoNothing();
 	}
 }

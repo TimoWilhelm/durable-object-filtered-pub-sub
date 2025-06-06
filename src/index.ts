@@ -5,7 +5,7 @@ export default {
 	async fetch(request, env, ctx): Promise<Response> {
 		const url = new URL(request.url);
 		if (url.pathname === '/ws' && request.headers.get('Upgrade') === 'websocket') {
-			const id: DurableObjectId = env.DURABLE_SUBSCRIBER.idFromName("foo");
+			const id: DurableObjectId = env.DURABLE_SUBSCRIBER.idFromName('foo');
 			const stub = env.DURABLE_SUBSCRIBER.get(id);
 			return stub.fetch(request);
 		}
@@ -42,7 +42,10 @@ export default {
 			try {
 				const id: DurableObjectId = env.DURABLE_PUBLISHER.idFromName(message.body.ticker);
 				const stub = env.DURABLE_PUBLISHER.get(id);
-				await stub.publish(message.body.value.toString());
+				await stub.publish({
+					ticker: message.body.ticker,
+					value: message.body.value,
+				});
 				message.ack();
 				console.log(`QUEUE: ${message.body.value} for ticker: ${message.body.ticker} (id: ${id.toString()})`);
 			} catch {

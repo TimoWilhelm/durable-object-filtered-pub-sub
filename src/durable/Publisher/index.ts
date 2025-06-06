@@ -1,4 +1,4 @@
-import type { PublishMessage } from '@/durable/shared';
+import type { MessageContent, PublishMessage } from '@/durable/shared';
 import { count, eq } from 'drizzle-orm';
 import { Temporal } from 'temporal-polyfill';
 import * as schema from './db/schema';
@@ -37,13 +37,7 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 		}
 	}
 
-	async echo(content: string): Promise<string> {
-		console.log(`Echoing message: ${content}`);
-		await new Promise((resolve) => setTimeout(resolve, 100)); // Simulate some processing delay
-		return content;
-	}
-
-	async publish(content: string): Promise<void> {
+	async publish(content: MessageContent): Promise<void> {
 		const message = {
 			id: crypto.randomUUID(),
 			publisherId: this.ctx.id.toString(),
