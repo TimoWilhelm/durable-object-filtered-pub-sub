@@ -1,12 +1,34 @@
-import type { PublishMessage } from '@/durable/shared';
-import { count, eq } from 'drizzle-orm';
+import { PING_INTERVAL, PING_TIMEOUT, type PublishMessage } from '@/durable/shared';
+import { count, eq, gt } from 'drizzle-orm';
 import * as schema from './db/schema';
 import migrations from './db/drizzle/migrations.js';
 import { DrizzleDurableObject } from '@/extension';
+import { Temporal } from 'temporal-polyfill';
 
 export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema, Env> {
 	protected readonly schema = schema;
 	protected readonly migrations = migrations;
+
+	async alarm(): Promise<void> {
+		console.log('Running subscriber alarm');
+
+		const db = await this.getDb();
+		const publishers = await db.query.publishers.findMany({ columns: { publisherId: true, lastPing: true } });
+
+		await Promise.all(
+			publishers.map(async ({ publisherId, lastPing }) => {
+				const now = Temporal.Now.instant();
+				const lastPingTimestamp = Temporal.Instant.fromEpochMilliseconds(lastPing.getTime());
+
+				if (now.since(lastPingTimestamp).subtract(PING_TIMEOUT).milliseconds > 0) {
+					console.log(`Resubscribing to ${publisherId} because last ping was ${now.since(lastPingTimestamp).toString()} ago`);
+					await this.subscribe(this.ctx.id.toString(), publisherId);
+				}
+			})
+		);
+
+		this.ctx.storage.setAlarm(Temporal.Now.instant().add(PING_INTERVAL).epochMilliseconds);
+	}
 
 	async fetch(request: Request): Promise<Response> {
 		const url = new URL(request.url);
@@ -41,7 +63,7 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 		// delete existing subscriptions for this session
 		const db = await this.getDb();
 		await db.delete(schema.tickerSubscriptions).where(eq(schema.tickerSubscriptions.sessionId, sessionId));
-		await this.cleanupSubscriptions(); // TODO: this might be wasteful if the user is resubscribing to the some of the same tickers. Might want to do surgical updates in the future.
+		await this.cleanupSubscriptions(); // TODO: this can be wasteful if the user is resubscribing to the some of the same tickers. Might want to do surgical updates in the future.
 
 		await Promise.all(tickers.map((ticker) => this.subscribe(sessionId, ticker)));
 	}
@@ -54,7 +76,7 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 		await this.handleClose(ws);
 	}
 
-	async onMessage(message: PublishMessage): Promise<void> {
+	async onPubSubMessage(message: PublishMessage): Promise<void> {
 		console.log(`Received message from publisher ${message.publisherId}: ${message.content}`);
 
 		const webSockets = this.ctx.getWebSockets();
@@ -98,6 +120,20 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 				}
 			})
 		);
+	}
+
+	async onPubSubPing(publisherId: string): Promise<void> {
+		console.log(`Received ping from publisher ${publisherId}`);
+
+		const db = await this.getDb();
+		const publishers = await db.query.publishers.findMany({ columns: { publisherId: true } });
+		if (!publishers.some((publisher) => publisher.publisherId === publisherId)) {
+			console.warn('received ping from invalid publisher', publisherId);
+			await this.unsubscribe(publisherId);
+			return;
+		}
+
+		await db.update(schema.publishers).set({ lastPing: new Date() }).where(eq(schema.publishers.publisherId, publisherId));
 	}
 
 	async onUnsubscribed(publisherId: string): Promise<void> {
@@ -173,6 +209,7 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 			await stub.subscribe(this.ctx.id.toString());
 			await db.insert(schema.publishers).values({ publisherId: id.toString(), ticker });
 			console.log(`Subscribed to publisher: ${id.toString()}`);
+			this.ctx.storage.setAlarm(Temporal.Now.instant().add(PING_INTERVAL).epochMilliseconds);
 		}
 
 		await db

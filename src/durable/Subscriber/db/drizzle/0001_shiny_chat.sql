@@ -1,0 +1,1 @@
+ALTER TABLE `publishers` ADD `lastPing` integer DEFAULT '"2025-06-13T11:22:35.120Z"';

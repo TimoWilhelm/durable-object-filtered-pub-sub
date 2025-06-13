@@ -1,8 +1,9 @@
-import { sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
+import { integer, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
 
 export const publishers = sqliteTable('publishers', {
 	publisherId: text('publisher_id').primaryKey(),
 	ticker: text('ticker').notNull(),
+	lastPing: integer({ mode: 'timestamp_ms' }).notNull().default(new Date()),
 });
 
 export const sessions = sqliteTable('sessions', {
