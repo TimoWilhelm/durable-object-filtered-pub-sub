@@ -15,6 +15,11 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 		const db = await this.getDb();
 		const publishers = await db.query.publishers.findMany({ columns: { publisherId: true, lastPing: true } });
 
+		if (this.ctx.getWebSockets().length === 0) {
+			this.cleanup();
+			return;
+		}
+
 		await Promise.all(
 			publishers.map(async ({ publisherId, lastPing }) => {
 				const now = Temporal.Now.instant();
@@ -82,10 +87,7 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 		const webSockets = this.ctx.getWebSockets();
 		if (webSockets.length === 0) {
 			await this.unsubscribe(message.publisherId);
-			await this.ctx.blockConcurrencyWhile(async () => {
-				await this.ctx.storage.deleteAlarm();
-				await this.ctx.storage.deleteAll();
-			});
+			this.cleanup();
 			return;
 		}
 
@@ -130,6 +132,11 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 		if (!publishers.some((publisher) => publisher.publisherId === publisherId)) {
 			console.warn('received ping from invalid publisher', publisherId);
 			await this.unsubscribe(publisherId);
+
+			if (this.ctx.getWebSockets().length === 0) {
+				this.cleanup();
+			}
+
 			return;
 		}
 
@@ -157,10 +164,7 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 				})
 			);
 
-			await this.ctx.blockConcurrencyWhile(async () => {
-				await this.ctx.storage.deleteAlarm();
-				await this.ctx.storage.deleteAll();
-			});
+			this.cleanup();
 			return;
 		}
 
@@ -219,5 +223,12 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 				publisherId: id.toString(),
 			})
 			.onConflictDoNothing();
+	}
+
+	private cleanup() {
+		void this.ctx.blockConcurrencyWhile(async () => {
+			await this.ctx.storage.deleteAlarm();
+			await this.ctx.storage.deleteAll();
+		});
 	}
 }

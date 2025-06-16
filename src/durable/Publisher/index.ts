@@ -16,6 +16,11 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 		const db = await this.getDb();
 		const subscribers = await db.query.subscribers.findMany();
 
+		if (subscribers.length === 0) {
+			this.cleanup();
+			return;
+		}
+
 		await Promise.all(
 			subscribers.map(async ({ subscriberId }) => {
 				const id = this.env.DURABLE_SUBSCRIBER.idFromString(subscriberId);
@@ -53,10 +58,8 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 
 		const [{ count: numSubscribers }] = await db.select({ count: count() }).from(schema.subscribers);
 		if (numSubscribers === 0) {
-			await this.ctx.blockConcurrencyWhile(async () => {
-				await this.ctx.storage.deleteAlarm();
-				await this.ctx.storage.deleteAll();
-			});
+			this.cleanup();
+			return;
 		}
 	}
 
@@ -69,6 +72,11 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 
 		const db = await this.getDb();
 		const subscribers = await db.query.subscribers.findMany();
+
+		if (subscribers.length === 0) {
+			this.cleanup();
+			return;
+		}
 
 		await Promise.all(
 			subscribers.map(async ({ subscriberId }) => {
@@ -83,5 +91,12 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 				}
 			})
 		);
+	}
+
+	private cleanup() {
+		void this.ctx.blockConcurrencyWhile(async () => {
+			await this.ctx.storage.deleteAlarm();
+			await this.ctx.storage.deleteAll();
+		});
 	}
 }
