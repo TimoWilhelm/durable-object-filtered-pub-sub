@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
+import { integer, sqliteTable, text, unique, real } from 'drizzle-orm/sqlite-core';
 
 export const publishers = sqliteTable('publishers', {
 	publisherId: text('publisher_id').primaryKey(),
@@ -18,3 +18,9 @@ export const tickerSubscriptions = sqliteTable(
 	},
 	(table) => [unique('unique_session_ticker').on(table.sessionId, table.publisherId)]
 );
+
+export const latestTickerValues = sqliteTable('latest_ticker_values', {
+	ticker: text('ticker').primaryKey(),
+	value: real('value').notNull(),
+	updatedAt: integer({ mode: 'timestamp_ms' }).notNull().default(new Date()),
+});

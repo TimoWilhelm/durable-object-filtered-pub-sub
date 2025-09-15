@@ -8,9 +8,9 @@
 		"build": "vite build",
 		"deploy": "npm run build && wrangler deploy",
 		"cf-typegen": "wrangler types",
-		"db": "npm-run-all --parallel db:**",
-		"db:durable:publisher": "npx drizzle-kit generate --config ./src/durable/Publisher/db/drizzle.config.ts",
-		"db:durable:subscriber": "npx drizzle-kit generate --config ./src/durable/Subscriber/db/drizzle.config.ts"
+		"db:generate": "npm-run-all --parallel db:generate:**",
+		"db:generate:durable:publisher": "npx drizzle-kit generate --config ./src/durable/Publisher/db/drizzle.config.ts",
+		"db:generate:durable:subscriber": "npx drizzle-kit generate --config ./src/durable/Subscriber/db/drizzle.config.ts"
 	},
 	"devDependencies": {
 		"@cloudflare/vite-plugin": "^1.5.0",

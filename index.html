@@ -4,43 +4,407 @@
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
 		<meta http-equiv="X-UA-Compatible" content="ie=edge" />
+		<title>Durable Objects Publisher-Subscriber Demo</title>
 		<style>
-			html,
-			body {
-				height: 100%;
+			* {
 				margin: 0;
+				padding: 0;
+				box-sizing: border-box;
 			}
-			.container {
-				height: 100%;
+
+			body {
+				font-family: 'Segoe UI', Tango, Geneva, Verdana, sans-serif;
+				background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+				color: #333;
+				min-height: 100vh;
+			}
+
+			.header {
+				background: rgba(255, 255, 255, 0.95);
+				padding: 1.5rem;
+				text-align: center;
+				box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+			}
+
+			.header h1 {
+				color: #2c3e50;
+				margin-bottom: 0.5rem;
+			}
+
+			.header p {
+				color: #7f8c8d;
+				font-size: 1.1rem;
+			}
+
+			.controls {
+				background: rgba(255, 255, 255, 0.9);
+				padding: 1rem;
+				margin: 1rem;
+				border-radius: 10px;
+				box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+				display: flex;
+				gap: 1rem;
+				align-items: center;
+				justify-content: center;
+			}
+
+			.btn {
+				background: #3498db;
+				color: white;
+				border: none;
+				padding: 0.75rem 1.5rem;
+				border-radius: 5px;
+				cursor: pointer;
+				font-size: 1rem;
+				transition: background-color 0.3s;
+			}
+
+			.btn:hover {
+				background: #2980b9;
+			}
+
+			.btn.success {
+				background: #27ae60;
+			}
+
+			.btn.success:hover {
+				background: #229954;
+			}
+
+			.demo-container {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				gap: 1rem;
+				margin: 1rem;
+				height: calc(100vh - 200px);
+			}
+
+			.subscriber-panel {
+				background: rgba(255, 255, 255, 0.95);
+				border-radius: 10px;
+				padding: 1.5rem;
+				box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 				display: flex;
 				flex-direction: column;
-				align-items: stretch;
+			}
+
+			.subscriber-header {
+				border-bottom: 2px solid #ecf0f1;
+				padding-bottom: 1rem;
+				margin-bottom: 1rem;
+			}
+
+			.subscriber-title {
+				color: #2c3e50;
+				font-size: 1.3rem;
+				margin-bottom: 0.5rem;
+			}
+
+			.subscriber-info {
+				color: #7f8c8d;
+				font-size: 0.9rem;
+			}
+
+			.ticker-list {
+				flex: 1;
+				overflow-y: auto;
+			}
+
+			.ticker-item {
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				padding: 0.75rem;
+				margin-bottom: 0.5rem;
+				background: #f8f9fa;
+				border-radius: 5px;
+				border-left: 4px solid #3498db;
+				transition: all 0.3s;
+			}
+
+			.ticker-item.updated {
+				animation: flash 0.5s ease-in-out;
+			}
+
+			@keyframes flash {
+				0% {
+					background: #2ecc71;
+				}
+				100% {
+					background: #f8f9fa;
+				}
+			}
+
+			.ticker-symbol {
+				font-weight: bold;
+				color: #2c3e50;
+			}
+
+			.ticker-price {
+				font-family: 'Courier New', monospace;
+				font-weight: bold;
+			}
+
+			.ticker-change {
+				font-size: 0.8rem;
+				padding: 0.25rem 0.5rem;
+				border-radius: 3px;
+				color: white;
+				margin-left: 0.5rem;
+			}
+
+			.ticker-change.positive {
+				background: #27ae60;
+			}
+
+			.ticker-change.negative {
+				background: #e74c3c;
+			}
+
+			.ticker-change.neutral {
+				background: #95a5a6;
+			}
+
+			.connection-status {
+				padding: 0.5rem 1rem;
+				border-radius: 5px;
+				font-size: 0.9rem;
+				font-weight: bold;
+			}
+
+			.status-connected {
+				background: #d5f4e6;
+				color: #27ae60;
+			}
+
+			.status-disconnected {
+				background: #fadbd8;
+				color: #e74c3c;
+			}
+
+			.status-connecting {
+				background: #fef9e7;
+				color: #f39c12;
+			}
+
+			.message-count {
+				color: #7f8c8d;
+				font-size: 0.8rem;
+				margin-top: 1rem;
 			}
 		</style>
 	</head>
 	<body>
-		<div class="container"></div>
+		<div class="header">
+			<h1>Durable Objects Publisher-Subscriber Demo</h1>
+			<p>Real-time stock ticker updates using Cloudflare Durable Objects with filtered subscriptions</p>
+		</div>
+
+		<div class="controls">
+			<button id="startDemo" class="btn">Connect</button>
+			<button id="stopDemo" class="btn" style="background: #e74c3c; display: none">Disconnect</button>
+			<button id="startTickers" class="btn" style="background: #f39c12">Start Ticker Stream</button>
+			<button id="stopTickers" class="btn" style="background: #e67e22; display: none">Stop Ticker Stream</button>
+			<div id="globalStatus" class="connection-status status-disconnected">Disconnected</div>
+		</div>
+
+		<div class="demo-container">
+			<div class="subscriber-panel">
+				<div class="subscriber-header">
+					<div class="subscriber-title">Tech Portfolio Subscriber</div>
+					<div class="subscriber-info">Subscribed to: AAPL, MSFT, GOOGL, NVDA</div>
+					<div id="status1" class="connection-status status-disconnected">Disconnected</div>
+				</div>
+				<div id="tickers1" class="ticker-list"></div>
+				<div id="count1" class="message-count">Messages received: 0</div>
+			</div>
+
+			<div class="subscriber-panel">
+				<div class="subscriber-header">
+					<div class="subscriber-title">Growth Portfolio Subscriber</div>
+					<div class="subscriber-info">Subscribed to: TSLA, NVDA, NFLX, AAPL</div>
+					<div id="status2" class="connection-status status-disconnected">Disconnected</div>
+				</div>
+				<div id="tickers2" class="ticker-list"></div>
+				<div id="count2" class="message-count">Messages received: 0</div>
+			</div>
+		</div>
 
 		<script type="module">
-			const url = new URL('/ws', window.location.href);
-			url.protocol = url.protocol.replace('http', 'ws');
-			const socket = new WebSocket(url);
+			class TickerSubscriber {
+				constructor(containerId, statusId, countId, tickers) {
+					this.containerId = containerId;
+					this.statusId = statusId;
+					this.countId = countId;
+					this.tickers = tickers;
+					this.socket = null;
+					this.messageCount = 0;
+					this.lastPrices = {};
+					this.isConnected = false;
+				}
 
-			socket.addEventListener('message', (event) => {
-				const container = document.querySelector('.container');
-				const message = document.createElement('div');
-				message.textContent = event.data;
-				container.appendChild(message);
-			});
+				connect() {
+					const url = new URL('/ws', window.location.href);
+					url.protocol = url.protocol.replace('http', 'ws');
+					this.socket = new WebSocket(url);
 
-			const tickers = new URL(window.location.href).searchParams.get('tickers');
+					this.updateStatus('connecting');
 
-			if (!tickers) {
-				alert('No tickers provided in the URL');
+					this.socket.addEventListener('open', () => {
+						this.isConnected = true;
+						this.updateStatus('connected');
+						this.socket.send(this.tickers.join(','));
+					});
+
+					this.socket.addEventListener('message', (event) => {
+						try {
+							const message = JSON.parse(event.data);
+							this.handleMessage(message);
+						} catch (e) {
+							console.error('Failed to parse message:', e);
+						}
+					});
+
+					this.socket.addEventListener('close', () => {
+						this.isConnected = false;
+						this.updateStatus('disconnected');
+					});
+
+					this.socket.addEventListener('error', (error) => {
+						console.error('WebSocket error:', error);
+						this.isConnected = false;
+						this.updateStatus('disconnected');
+					});
+				}
+
+				disconnect() {
+					if (this.socket) {
+						this.socket.close();
+					}
+				}
+
+				handleMessage(message) {
+					this.messageCount++;
+					document.getElementById(this.countId).textContent = `Messages received: ${this.messageCount}`;
+
+					const { ticker, value } = message.content;
+					const lastPrice = this.lastPrices[ticker];
+					const change = lastPrice ? value - lastPrice : 0;
+					const changePercent = lastPrice ? (change / lastPrice) * 100 : 0;
+
+					this.lastPrices[ticker] = value;
+					this.updateTicker(ticker, value, change, changePercent);
+				}
+
+				updateTicker(symbol, price, change, changePercent) {
+					const container = document.getElementById(this.containerId);
+					let tickerElement = document.getElementById(`${this.containerId}-${symbol}`);
+
+					if (!tickerElement) {
+						tickerElement = document.createElement('div');
+						tickerElement.id = `${this.containerId}-${symbol}`;
+						tickerElement.className = 'ticker-item';
+						container.appendChild(tickerElement);
+					}
+
+					const changeClass = change > 0 ? 'positive' : change < 0 ? 'negative' : 'neutral';
+					const changeSign = change >= 0 ? '+' : '';
+
+					tickerElement.innerHTML = `
+						<span class="ticker-symbol">${symbol}</span>
+						<div>
+							<span class="ticker-price">$${price.toFixed(2)}</span>
+							<span class="ticker-change ${changeClass}">
+								${changeSign}${change.toFixed(2)} (${changePercent.toFixed(2)}%)
+							</span>
+						</div>
+					`;
+
+					tickerElement.classList.add('updated');
+					setTimeout(() => tickerElement.classList.remove('updated'), 500);
+				}
+
+				updateStatus(status) {
+					const statusElement = document.getElementById(this.statusId);
+					statusElement.className = `connection-status status-${status}`;
+					statusElement.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+				}
 			}
 
-			socket.addEventListener('open', () => {
-				socket.send(tickers);
+			// Initialize subscribers with overlapping ticker portfolios to demonstrate DO reuse
+			const techSubscriber = new TickerSubscriber('tickers1', 'status1', 'count1', ['AAPL', 'MSFT', 'GOOGL', 'NVDA']);
+			const growthSubscriber = new TickerSubscriber('tickers2', 'status2', 'count2', ['TSLA', 'NVDA', 'NFLX', 'AAPL']);
+
+			let demoRunning = false;
+			let tickerStreamRunning = false;
+			let tickerInterval;
+
+			document.getElementById('startDemo').addEventListener('click', async () => {
+				if (demoRunning) return;
+
+				// Connect subscribers
+				techSubscriber.connect();
+				growthSubscriber.connect();
+
+				demoRunning = true;
+				document.getElementById('globalStatus').className = 'connection-status status-connected';
+				document.getElementById('globalStatus').textContent = 'Connected';
+				
+				// Show/hide buttons
+				document.getElementById('startDemo').style.display = 'none';
+				document.getElementById('stopDemo').style.display = 'inline-block';
+			});
+
+			document.getElementById('stopDemo').addEventListener('click', () => {
+				if (!demoRunning) return;
+
+				// Disconnect subscribers
+				techSubscriber.disconnect();
+				growthSubscriber.disconnect();
+
+				demoRunning = false;
+				document.getElementById('globalStatus').className = 'connection-status status-disconnected';
+				document.getElementById('globalStatus').textContent = 'Disconnected';
+				
+				// Show/hide buttons
+				document.getElementById('startDemo').style.display = 'inline-block';
+				document.getElementById('stopDemo').style.display = 'none';
+			});
+
+			document.getElementById('startTickers').addEventListener('click', () => {
+				if (tickerStreamRunning) return;
+
+				// Start ticker generation every 2 seconds
+				tickerInterval = setInterval(async () => {
+					try {
+						await fetch('/queue', { method: 'POST' });
+						console.log('Ticker data generated');
+					} catch (e) {
+						console.error('Failed to generate ticker data:', e);
+					}
+				}, 2000);
+
+				tickerStreamRunning = true;
+				
+				// Show/hide buttons
+				document.getElementById('startTickers').style.display = 'none';
+				document.getElementById('stopTickers').style.display = 'inline-block';
+			});
+
+			document.getElementById('stopTickers').addEventListener('click', () => {
+				if (!tickerStreamRunning) return;
+
+				// Stop ticker generation
+				if (tickerInterval) {
+					clearInterval(tickerInterval);
+					tickerInterval = null;
+				}
+
+				tickerStreamRunning = false;
+				
+				// Show/hide buttons
+				document.getElementById('startTickers').style.display = 'inline-block';
+				document.getElementById('stopTickers').style.display = 'none';
 			});
 		</script>
 	</body>

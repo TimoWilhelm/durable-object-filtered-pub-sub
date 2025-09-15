@@ -46,6 +46,26 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 		}
 
 		console.log(`New subscriber: ${subscriberId}`);
+
+		// Send the latest ticker value to the new subscriber if available
+		const latestValue = await db.query.latestTickerValue.findFirst();
+		if (latestValue) {
+			const message = {
+				id: crypto.randomUUID(),
+				publisherId: this.ctx.id.toString(),
+				content: { ticker: latestValue.ticker, value: latestValue.value },
+			} satisfies PublishMessage;
+
+			const id = this.env.DURABLE_SUBSCRIBER.idFromString(subscriberId);
+			const stub = this.env.DURABLE_SUBSCRIBER.get(id);
+			try {
+				console.log(`Sending latest value to new subscriber ${subscriberId}:`, message);
+				await stub.onPubSubMessage(message);
+			} catch (error) {
+				console.error(`Error sending latest value to ${subscriberId}:`, error);
+				await this.unsubscribe(subscriberId);
+			}
+		}
 	}
 
 	async unsubscribe(subscriberId: string): Promise<void> {
@@ -64,13 +84,30 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 	}
 
 	async publish(content: MessageContent): Promise<void> {
+		const db = await this.getDb();
+
+		// Store the latest ticker value in database table
+		await db.insert(schema.latestTickerValue)
+			.values({
+				ticker: content.ticker,
+				value: content.value,
+				updatedAt: new Date()
+			})
+			.onConflictDoUpdate({
+				target: schema.latestTickerValue.id,
+				set: {
+					ticker: content.ticker,
+					value: content.value,
+					updatedAt: new Date()
+				}
+			});
+
 		const message = {
 			id: crypto.randomUUID(),
 			publisherId: this.ctx.id.toString(),
 			content,
 		} satisfies PublishMessage;
 
-		const db = await this.getDb();
 		const subscribers = await db.query.subscribers.findMany();
 
 		if (subscribers.length === 0) {
@@ -96,7 +133,7 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 	private cleanup() {
 		void this.ctx.blockConcurrencyWhile(async () => {
 			await this.ctx.storage.deleteAlarm();
-			await this.ctx.storage.deleteAll();
+			// await this.ctx.storage.deleteAll();
 		});
 	}
 }

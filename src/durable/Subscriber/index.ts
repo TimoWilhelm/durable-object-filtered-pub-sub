@@ -1,9 +1,13 @@
 import { PING_INTERVAL, PING_TIMEOUT, type PublishMessage } from '@/durable/shared';
-import { count, eq, gt } from 'drizzle-orm';
+import { count, eq } from 'drizzle-orm';
 import * as schema from './db/schema';
 import migrations from './db/drizzle/migrations.js';
 import { DrizzleDurableObject } from '@/extension';
 import { Temporal } from 'temporal-polyfill';
+
+type WsAttachment = {
+	sessionId: string;
+};
 
 export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema, Env> {
 	protected readonly schema = schema;
@@ -42,7 +46,7 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 			this.ctx.acceptWebSocket(pair[1]);
 
 			const sessionId = crypto.randomUUID();
-			pair[1].serializeAttachment(sessionId);
+			pair[1].serializeAttachment({ sessionId } satisfies WsAttachment);
 
 			const db = await this.getDb();
 			await db.insert(schema.sessions).values({ sessionId });
@@ -63,7 +67,7 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 			.split(',')
 			.map((ticker) => ticker.trim().toUpperCase());
 
-		const sessionId = ws.deserializeAttachment() as string;
+		const { sessionId } = ws.deserializeAttachment() as WsAttachment;
 
 		// delete existing subscriptions for this session
 		const db = await this.getDb();
@@ -71,6 +75,33 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 		await this.cleanupSubscriptions(); // TODO: this can be wasteful if the user is resubscribing to the some of the same tickers. Might want to do surgical updates in the future.
 
 		await Promise.all(tickers.map((ticker) => this.subscribe(sessionId, ticker)));
+
+		// Send latest ticker values for subscribed tickers to new WebSocket connection
+		const latestValues = await db.query.latestTickerValues.findMany({
+			where: (latestTickerValues, { inArray }) => inArray(latestTickerValues.ticker, tickers),
+		});
+
+		console.log(`Found ${latestValues.length} latest values for tickers: ${tickers.join(', ')}`);
+
+		for (const latestValue of latestValues) {
+			const message = {
+				id: crypto.randomUUID(),
+				publisherId: `publisher-${latestValue.ticker}`,
+				content: {
+					ticker: latestValue.ticker,
+					value: latestValue.value,
+				},
+			};
+
+			try {
+				ws.send(JSON.stringify(message));
+				console.log(`Sent latest value to new WebSocket connection for ${latestValue.ticker}: ${latestValue.value}`);
+			} catch (error) {
+				console.error('Error sending latest value to WebSocket:', error);
+				await this.handleClose(ws);
+				break;
+			}
+		}
 	}
 
 	async webSocketClose(ws: WebSocket, code: number, reason: string, wasClean: boolean): Promise<void> {
@@ -99,6 +130,23 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 			return;
 		}
 
+		// Store latest ticker value in subscriber database
+		console.log(`Storing latest ticker value for ${message.content.ticker}: ${message.content.value}`);
+		await db
+			.insert(schema.latestTickerValues)
+			.values({
+				ticker: message.content.ticker,
+				value: message.content.value,
+				updatedAt: new Date(),
+			})
+			.onConflictDoUpdate({
+				target: schema.latestTickerValues.ticker,
+				set: {
+					value: message.content.value,
+					updatedAt: new Date(),
+				},
+			});
+
 		// find all ws that are subscribed to this publisher
 		const sessionIds = await db
 			.select({ sessionId: schema.tickerSubscriptions.sessionId })
@@ -109,7 +157,7 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 
 		await Promise.all(
 			webSockets.map(async (webSocket) => {
-				const sessionId = webSocket.deserializeAttachment() as string;
+				const { sessionId } = webSocket.deserializeAttachment() as WsAttachment;
 				if (!sessionIds.some((s) => s.sessionId === sessionId)) {
 					return;
 				}
@@ -168,7 +216,7 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 			return;
 		}
 
-		const sessionId = webSocket.deserializeAttachment() as string;
+		const { sessionId } = webSocket.deserializeAttachment() as WsAttachment;
 		await db.delete(schema.sessions).where(eq(schema.sessions.sessionId, sessionId));
 
 		await this.cleanupSubscriptions();
@@ -193,27 +241,34 @@ export class SubscriberDurableObject extends DrizzleDurableObject<typeof schema,
 	}
 
 	private async unsubscribe(publisherId: string): Promise<void> {
-		const id = this.env.DURABLE_PUBLISHER.idFromString(publisherId);
-		const stub = this.env.DURABLE_PUBLISHER.get(id);
-		await stub.unsubscribe(this.ctx.id.toString());
-		const db = await this.getDb();
-		await db.delete(schema.publishers).where(eq(schema.publishers.publisherId, publisherId));
+		try {
+			const id = this.env.DURABLE_PUBLISHER.idFromString(publisherId);
+			const stub = this.env.DURABLE_PUBLISHER.get(id);
+			await stub.unsubscribe(this.ctx.id.toString());
+		} finally {
+			const db = await this.getDb();
+			await db.delete(schema.publishers).where(eq(schema.publishers.publisherId, publisherId));
+		}
 	}
 
 	private async subscribe(sessionId: string, ticker: string): Promise<void> {
-		console.log('Subscribing to publisher...');
-
 		const id = this.env.DURABLE_PUBLISHER.idFromName(ticker);
 
 		const db = await this.getDb();
 		const publisher = await db.query.publishers.findFirst({ where: eq(schema.publishers.publisherId, id.toString()) });
 
+		console.log(`Found publisher: ${id.toString()}`);
+
 		if (publisher === undefined) {
 			const stub = this.env.DURABLE_PUBLISHER.get(id);
-			await stub.subscribe(this.ctx.id.toString());
 			await db.insert(schema.publishers).values({ publisherId: id.toString(), ticker });
-			console.log(`Subscribed to publisher: ${id.toString()}`);
-			this.ctx.storage.setAlarm(Temporal.Now.instant().add(PING_INTERVAL).epochMilliseconds);
+			try {
+				await stub.subscribe(this.ctx.id.toString());
+				console.log(`Subscribed to publisher: ${id.toString()}`);
+				this.ctx.storage.setAlarm(Temporal.Now.instant().add(PING_INTERVAL).epochMilliseconds);
+			} catch (error) {
+				await this.unsubscribe(id.toString());
+			}
 		}
 
 		await db
