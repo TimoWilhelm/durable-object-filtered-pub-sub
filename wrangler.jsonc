@@ -15,6 +15,10 @@
 		{
 			"new_sqlite_classes": ["SubscriberDurableObject", "PublisherDurableObject"],
 			"tag": "v1"
+		},
+		{
+			"new_sqlite_classes": ["DistributorDurableObject"],
+			"tag": "v2"
 		}
 	],
 	"durable_objects": {
@@ -26,6 +30,10 @@
 			{
 				"class_name": "PublisherDurableObject",
 				"name": "DURABLE_PUBLISHER"
+			},
+			{
+				"class_name": "DistributorDurableObject",
+				"name": "DURABLE_DISTRIBUTOR"
 			}
 		]
 	},

@@ -1,5 +1,6 @@
 export { SubscriberDurableObject } from '@/durable/Subscriber';
 export { PublisherDurableObject } from '@/durable/Publisher';
+export { DistributorDurableObject } from '@/durable/Distributor';
 
 // Ticker data with realistic prices
 const TICKERS = [

@@ -4,15 +4,60 @@ import { Temporal } from 'temporal-polyfill';
 import * as schema from './db/schema';
 import migrations from './db/drizzle/migrations.js';
 import { DrizzleDurableObject } from '@/extension';
+import type { DistributeMessageRequest } from '@/durable/Distributor';
 
 export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, Env> {
 	protected readonly schema = schema;
 	protected readonly migrations = migrations;
 
+	private static readonly DISTRIBUTOR_BATCH_SIZE = 100;
+
+	/**
+	 * Chunks subscriber IDs into batches and distributes them across DistributorDurableObjects
+	 */
+	private async distributeToSubscribers<T>(
+		subscriberIds: string[],
+		operation: 'message' | 'ping',
+		data: T
+	): Promise<void> {
+		if (subscriberIds.length === 0) return;
+
+		// Chunk subscribers into batches of 100
+		const chunks: string[][] = [];
+		for (let i = 0; i < subscriberIds.length; i += PublisherDurableObject.DISTRIBUTOR_BATCH_SIZE) {
+			chunks.push(subscriberIds.slice(i, i + PublisherDurableObject.DISTRIBUTOR_BATCH_SIZE));
+		}
+
+		// Create distributor instances for each chunk and execute in parallel
+		await Promise.all(
+			chunks.map(async (chunk, index) => {
+				// Create deterministic distributor ID based on publisher ID and batch index
+				const distributorId = this.env.DURABLE_DISTRIBUTOR.idFromName(
+					`${this.ctx.id.toString()}-${operation}-${index}`
+				);
+				const distributorStub = this.env.DURABLE_DISTRIBUTOR.get(distributorId);
+
+				try {
+					if (operation === 'message') {
+						const request: DistributeMessageRequest = {
+							message: data as PublishMessage,
+							subscriberIds: chunk,
+						};
+						await distributorStub.distributeMessage(request);
+					} else if (operation === 'ping') {
+						await distributorStub.distributePing(this.ctx.id.toString(), chunk);
+					}
+				} catch (error) {
+					console.error(`Error in distributor for chunk ${index}:`, error);
+				}
+			})
+		);
+	}
+
 	async alarm(): Promise<void> {
 		console.log('Running publisher alarm');
 
-		// send ping to all subscribers
+		// send ping to all subscribers via distributors
 		const db = await this.getDb();
 		const subscribers = await db.query.subscribers.findMany();
 
@@ -21,18 +66,8 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 			return;
 		}
 
-		await Promise.all(
-			subscribers.map(async ({ subscriberId }) => {
-				const id = this.env.DURABLE_SUBSCRIBER.idFromString(subscriberId);
-				const stub = this.env.DURABLE_SUBSCRIBER.get(id);
-				try {
-					await stub.onPubSubPing(this.ctx.id.toString());
-				} catch (error) {
-					console.error(`Error sending ping to ${subscriberId}:`, error);
-					await this.unsubscribe(subscriberId);
-				}
-			})
-		);
+		const subscriberIds = subscribers.map(({ subscriberId }) => subscriberId);
+		await this.distributeToSubscribers(subscriberIds, 'ping', null);
 
 		this.ctx.storage.setAlarm(Temporal.Now.instant().add(PING_INTERVAL).epochMilliseconds);
 	}
@@ -115,19 +150,9 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 			return;
 		}
 
-		await Promise.all(
-			subscribers.map(async ({ subscriberId }) => {
-				const id = this.env.DURABLE_SUBSCRIBER.idFromString(subscriberId);
-				const stub = this.env.DURABLE_SUBSCRIBER.get(id);
-				try {
-					console.log(`Sending message to ${subscriberId}:`, message);
-					await stub.onPubSubMessage(message);
-				} catch (error) {
-					console.error(`Error sending message to ${subscriberId}:`, error);
-					await this.unsubscribe(subscriberId);
-				}
-			})
-		);
+		const subscriberIds = subscribers.map(({ subscriberId }) => subscriberId);
+		console.log(`Publishing message to ${subscriberIds.length} subscribers via distributors:`, message);
+		await this.distributeToSubscribers(subscriberIds, 'message', message);
 	}
 
 	private cleanup() {
