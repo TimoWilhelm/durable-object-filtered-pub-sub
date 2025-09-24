@@ -6,6 +6,7 @@ declare namespace Cloudflare {
 		DURABLE_SUBSCRIBER: DurableObjectNamespace<import("./src/index").SubscriberDurableObject>;
 		DURABLE_PUBLISHER: DurableObjectNamespace<import("./src/index").PublisherDurableObject>;
 		DURABLE_DISTRIBUTOR: DurableObjectNamespace<import("./src/index").DistributorDurableObject>;
+		DURABLE_DEBUG_TRACKER: DurableObjectNamespace<import("./src/index").DebugTrackerDurableObject>;
 		QUEUE_EVENTS: Queue;
 	}
 }

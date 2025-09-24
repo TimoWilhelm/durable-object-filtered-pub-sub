@@ -9,7 +9,9 @@
 	"compatibility_date": "2025-09-01",
 	"compatibility_flags": ["nodejs_compat"],
 	"assets": {
-		"directory": "dist"
+		"directory": "dist",
+		"binding": "ASSETS",
+		"not_found_handling": "404-page"
 	},
 	"migrations": [
 		{
@@ -19,6 +21,10 @@
 		{
 			"new_sqlite_classes": ["DistributorDurableObject"],
 			"tag": "v2"
+		},
+		{
+			"new_sqlite_classes": ["DebugTrackerDurableObject"],
+			"tag": "v3"
 		}
 	],
 	"durable_objects": {
@@ -34,6 +40,10 @@
 			{
 				"class_name": "DistributorDurableObject",
 				"name": "DURABLE_DISTRIBUTOR"
+			},
+			{
+				"class_name": "DebugTrackerDurableObject",
+				"name": "DURABLE_DEBUG_TRACKER"
 			}
 		]
 	},

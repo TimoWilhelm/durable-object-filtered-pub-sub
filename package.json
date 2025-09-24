@@ -10,7 +10,8 @@
 		"cf-typegen": "wrangler types",
 		"db:generate": "npm-run-all --parallel db:generate:**",
 		"db:generate:durable:publisher": "npx drizzle-kit generate --config ./src/durable/Publisher/db/drizzle.config.ts",
-		"db:generate:durable:subscriber": "npx drizzle-kit generate --config ./src/durable/Subscriber/db/drizzle.config.ts"
+		"db:generate:durable:subscriber": "npx drizzle-kit generate --config ./src/durable/Subscriber/db/drizzle.config.ts",
+		"db:generate:durable:debug-tracker": "npx drizzle-kit generate --config ./src/durable/DebugTracker/db/drizzle.config.ts"
 	},
 	"devDependencies": {
 		"@cloudflare/vite-plugin": "^1.5.0",

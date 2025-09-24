@@ -5,21 +5,24 @@ import * as schema from './db/schema';
 import migrations from './db/drizzle/migrations.js';
 import { DrizzleDurableObject } from '@/extension';
 import type { DistributeMessageRequest } from '@/durable/Distributor';
+import { DebugLogger } from '@/utils/debug';
 
 export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, Env> {
 	protected readonly schema = schema;
 	protected readonly migrations = migrations;
 
-	private static readonly DISTRIBUTOR_BATCH_SIZE = 100;
+	private static readonly DISTRIBUTOR_BATCH_SIZE = 10;
+	private debugLogger: DebugLogger;
+
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, env);
+		this.debugLogger = new DebugLogger(env);
+	}
 
 	/**
 	 * Chunks subscriber IDs into batches and distributes them across DistributorDurableObjects
 	 */
-	private async distributeToSubscribers<T>(
-		subscriberIds: string[],
-		operation: 'message' | 'ping',
-		data: T
-	): Promise<void> {
+	private async distributeToSubscribers<T>(subscriberIds: string[], operation: 'message' | 'ping', data: T): Promise<void> {
 		if (subscriberIds.length === 0) return;
 
 		// Chunk subscribers into batches of 100
@@ -37,18 +40,37 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 				);
 				const distributorStub = this.env.DURABLE_DISTRIBUTOR.get(distributorId);
 
-				try {
-					if (operation === 'message') {
-						const request: DistributeMessageRequest = {
-							message: data as PublishMessage,
-							subscriberIds: chunk,
-						};
-						await distributorStub.distributeMessage(request);
-					} else if (operation === 'ping') {
-						await distributorStub.distributePing(this.ctx.id.toString(), chunk);
-					}
-				} catch (error) {
-					console.error(`Error in distributor for chunk ${index}:`, error);
+				if (operation === 'message') {
+					const request: DistributeMessageRequest = {
+						message: data as PublishMessage,
+						subscriberIds: chunk,
+					};
+
+					await this.debugLogger.trackTimedOperation(
+						'distribute_message',
+						'publisher',
+						this.ctx.id.toString(),
+						'distributor',
+						distributorId.toString(),
+						async () => {
+							await distributorStub.distributeMessage(request);
+						},
+						request,
+						{ batchIndex: index, chunkSize: chunk.length }
+					);
+				} else if (operation === 'ping') {
+					await this.debugLogger.trackTimedOperation(
+						'distribute_ping',
+						'publisher',
+						this.ctx.id.toString(),
+						'distributor',
+						distributorId.toString(),
+						async () => {
+							await distributorStub.distributePing(this.ctx.id.toString(), chunk);
+						},
+						{ subscriberIds: chunk },
+						{ batchIndex: index, chunkSize: chunk.length }
+					);
 				}
 			})
 		);
@@ -76,6 +98,9 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 		const db = await this.getDb();
 		await db.insert(schema.subscribers).values({ subscriberId }).onConflictDoNothing();
 
+		// Track subscription
+		await this.debugLogger.trackSimpleInteraction('subscribe', 'subscriber', subscriberId, 'publisher', this.ctx.id.toString(), true);
+
 		if ((await this.ctx.storage.getAlarm()) === null) {
 			this.ctx.storage.setAlarm(Temporal.Now.instant().add(PING_INTERVAL).epochMilliseconds);
 		}
@@ -93,13 +118,26 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 
 			const id = this.env.DURABLE_SUBSCRIBER.idFromString(subscriberId);
 			const stub = this.env.DURABLE_SUBSCRIBER.get(id);
-			try {
-				console.log(`Sending latest value to new subscriber ${subscriberId}:`, message);
-				await stub.onPubSubMessage(message);
-			} catch (error) {
-				console.error(`Error sending latest value to ${subscriberId}:`, error);
-				await this.unsubscribe(subscriberId);
-			}
+
+			await this.debugLogger
+				.trackTimedOperation(
+					'message',
+					'publisher',
+					this.ctx.id.toString(),
+					'subscriber',
+					subscriberId,
+					async () => {
+						console.log(`Sending latest value to new subscriber ${subscriberId}:`, message);
+						await stub.onPubSubMessage(message);
+					},
+					message,
+					{ type: 'latest_value' }
+				)
+				.catch(async (error) => {
+					console.error(`Error sending latest value to ${subscriberId}:`, error);
+					await this.unsubscribe(subscriberId);
+					throw error;
+				});
 		}
 	}
 
@@ -107,6 +145,10 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 		const db = await this.getDb();
 		await db.delete(schema.subscribers).where(eq(schema.subscribers.subscriberId, subscriberId));
 		console.log(`Removed subscriber: ${subscriberId}`);
+
+		// Track unsubscription
+		await this.debugLogger.trackSimpleInteraction('unsubscribe', 'publisher', this.ctx.id.toString(), 'subscriber', subscriberId, true);
+
 		const id = this.env.DURABLE_SUBSCRIBER.idFromString(subscriberId);
 		const stub = this.env.DURABLE_SUBSCRIBER.get(id);
 		await stub.onUnsubscribed(this.ctx.id.toString());
@@ -122,19 +164,20 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 		const db = await this.getDb();
 
 		// Store the latest ticker value in database table
-		await db.insert(schema.latestTickerValue)
+		await db
+			.insert(schema.latestTickerValue)
 			.values({
 				ticker: content.ticker,
 				value: content.value,
-				updatedAt: new Date()
+				updatedAt: new Date(),
 			})
 			.onConflictDoUpdate({
 				target: schema.latestTickerValue.id,
 				set: {
 					ticker: content.ticker,
 					value: content.value,
-					updatedAt: new Date()
-				}
+					updatedAt: new Date(),
+				},
 			});
 
 		const message = {
@@ -152,6 +195,20 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 
 		const subscriberIds = subscribers.map(({ subscriberId }) => subscriberId);
 		console.log(`Publishing message to ${subscriberIds.length} subscribers via distributors:`, message);
+
+		// Track publish operation
+		await this.debugLogger.trackSimpleInteraction(
+			'publish',
+			'queue',
+			'ticker-queue',
+			'publisher',
+			this.ctx.id.toString(),
+			true,
+			message,
+			undefined,
+			{ subscriberCount: subscriberIds.length }
+		);
+
 		await this.distributeToSubscribers(subscriberIds, 'message', message);
 	}
 

@@ -1,5 +1,6 @@
 import { type PublishMessage } from '@/durable/shared';
 import { DurableObject } from 'cloudflare:workers';
+import { DebugLogger } from '@/utils/debug';
 
 export interface DistributeMessageRequest {
 	message: PublishMessage;
@@ -7,6 +8,12 @@ export interface DistributeMessageRequest {
 }
 
 export class DistributorDurableObject extends DurableObject<Env> {
+	private debugLogger: DebugLogger;
+
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, env);
+		this.debugLogger = new DebugLogger(env);
+	}
 	/**
 	 * Receives a message and list of subscriber IDs, then distributes the message to all specified subscribers
 	 */
@@ -20,12 +27,22 @@ export class DistributorDurableObject extends DurableObject<Env> {
 			subscriberIds.map(async (subscriberId) => {
 				const id = this.env.DURABLE_SUBSCRIBER.idFromString(subscriberId);
 				const stub = this.env.DURABLE_SUBSCRIBER.get(id);
-				try {
-					await stub.onPubSubMessage(message);
-				} catch (error) {
+				
+				await this.debugLogger.trackTimedOperation(
+					'message',
+					'distributor',
+					this.ctx.id.toString(),
+					'subscriber',
+					subscriberId,
+					async () => {
+						await stub.onPubSubMessage(message);
+					},
+					message,
+					{ distributorBatch: true }
+				).catch((error) => {
 					console.error(`DistributorDurableObject: Error sending message to subscriber ${subscriberId}:`, error);
 					// Note: We don't handle unsubscription here since this is the responsibility of the PublisherDurableObject
-				}
+				});
 			})
 		);
 	}
@@ -40,12 +57,22 @@ export class DistributorDurableObject extends DurableObject<Env> {
 			subscriberIds.map(async (subscriberId) => {
 				const id = this.env.DURABLE_SUBSCRIBER.idFromString(subscriberId);
 				const stub = this.env.DURABLE_SUBSCRIBER.get(id);
-				try {
-					await stub.onPubSubPing(publisherId);
-				} catch (error) {
+				
+				await this.debugLogger.trackTimedOperation(
+					'ping',
+					'distributor',
+					this.ctx.id.toString(),
+					'subscriber',
+					subscriberId,
+					async () => {
+						await stub.onPubSubPing(publisherId);
+					},
+					{ publisherId },
+					{ distributorBatch: true }
+				).catch((error) => {
 					console.error(`DistributorDurableObject: Error sending ping to subscriber ${subscriberId}:`, error);
 					// Note: We don't handle unsubscription here since this is the responsibility of the PublisherDurableObject
-				}
+				});
 			})
 		);
 	}
