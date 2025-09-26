@@ -33,7 +33,7 @@ export class PublisherDurableObject extends DrizzleDurableObject<typeof schema, 
 			chunks.map(async (chunk, index) => {
 				// Create deterministic distributor ID based on publisher ID and batch index
 				const distributorId = this.env.DURABLE_DISTRIBUTOR.idFromName(
-					`${this.ctx.id.toString()}-${operation}-${index}`
+					`${this.ctx.id.toString()}-${index}`
 				);
 				const distributorStub = this.env.DURABLE_DISTRIBUTOR.get(distributorId);
 
